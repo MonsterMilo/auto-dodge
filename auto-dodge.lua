@@ -3,7 +3,7 @@ plugin = {
     displayName = "Auto Dodge",
     command = "dodge",
     prefix = "§bAD",
-    version = "1.0.0",
+    version = "1.0.1",
     minStarfishVersion = "0.1.0-beta.16",
     description = "Dodges pregame lobbies when parties, open queues or nicks show up.",
     dependencies = {
@@ -432,12 +432,12 @@ local function markNicks(names, ofParty)
     return found
 end
 
-local function partyCheck(size, crowd)
+local function partyCheck(size, crowd, likely)
     if lobby.acted or lobby.started or size < 2 then return end
     local team = teamSize()
     if team < 2 or not cfg("partyDodge.on") then return end
     if size < (tonumber(cfg("partyDodge.size")) or 3) then return end
-    local what = crowd and ("§b" .. size .. " §7at once") or ("§7Party of §b" .. size)
+    local what = crowd and ("§b" .. size .. " §7at once §8(likely " .. likely .. ")") or ("§7Party of §b" .. size)
     local note = crowd and (size .. " joined at once") or ("party of " .. size .. " joined")
     dodge("party", what, note)
 end
@@ -451,6 +451,32 @@ local function openCheck(waiting, atLeast)
 end
 
 -- Groups
+
+-- A group bigger than a team is more than one party: split it where its join
+-- lines were furthest apart until every piece fits. "4+1", biggest first.
+local function likelySplit(names, cap)
+    local pieces = { names }
+    while true do
+        local idx
+        for i, p in ipairs(pieces) do if #p > cap then idx = i; break end end
+        if not idx then break end
+        local p = pieces[idx]
+        local at, widest = 2, -1
+        for i = 2, #p do
+            local g = joinedAt(p[i]) - joinedAt(p[i - 1])
+            if g > widest then widest = g; at = i end
+        end
+        local a, b = {}, {}
+        for i = 1, #p do table.insert(i < at and a or b, p[i]) end
+        table.remove(pieces, idx)
+        table.insert(pieces, idx, b)
+        table.insert(pieces, idx, a)
+    end
+    local sizes = {}
+    for _, p in ipairs(pieces) do table.insert(sizes, #p) end
+    table.sort(sizes, function(x, y) return x > y end)
+    return table.concat(sizes, "+")
+end
 
 local function addOthers(names)
     if lobby.started or #names == 0 then return end
@@ -481,13 +507,14 @@ local function addOthers(names)
     local nicks = markNicks(names, false)
     local team = teamSize()
     local crowd = team > 1 and #names > team
-    partyCheck(#names, crowd)
+    local likely = crowd and likelySplit(names, team) or nil
+    partyCheck(#names, crowd, likely)
     nickCheck()
     if lobby.acted then return end
     -- Join alerts
     local nickNote = (nicks > 0 and cfg("alerts.nicks")) and (" §8· §c" .. (nicks == 1 and "1 nick" or (nicks .. " nicks"))) or ""
     if #names >= 2 and team > 1 and cfg("alerts.joins") then
-        local what = crowd and ("§b" .. #names .. " §7joined at once") or ("§7Party of §b" .. #names .. " §7joined")
+        local what = crowd and ("§b" .. #names .. " §7joined §8(likely " .. likely .. ")") or ("§7Party of §b" .. #names .. " §7joined")
         say("§8» " .. what .. countText() .. nickNote)
     elseif nicks > 0 and cfg("alerts.nicks") then
         local what = nicks == 1 and "§cA nick §7joined" or ("§c" .. nicks .. " nicks §7joined")
