@@ -3,7 +3,7 @@ plugin = {
     displayName = "Auto Dodge",
     command = "dodge",
     prefix = "§bAD",
-    version = "1.0.1",
+    version = "1.0.2",
     minStarfishVersion = "0.1.0-beta.16",
     description = "Dodges pregame lobbies when parties, open queues or nicks show up.",
     dependencies = {
@@ -359,8 +359,8 @@ end
 -- Every trigger ends here. what: the chat line, note: the party chat line.
 local function dodge(kind, what, note, noCount)
     if lobby.acted or lobby.started then return false end
-    if teamSize() < 2 then return false end   -- solos never dodge
-    if party.inParty and not party.leader then return false end
+    if not location.inGame or teamSize() < 2 then return false end   -- BedWars only; solos never dodge
+    if not party.known or (party.inParty and not party.leader) then return false end
     lobby.acted = true
     local line = what .. (noCount and "" or countText())
     if timeLeft() < CUTOFF_MS then
@@ -644,10 +644,10 @@ local function flushJoins()
     local done = false
     local sub
     local function finish()
-        if done or lobby.id ~= id then return end
+        if done then return end
         done = true
         if sub then sub:off() end
-        go()
+        if lobby.id == id then go() end
     end
     local timeout = starfish.timers.delay(READY_WAIT_MS, finish)
     sub = starfish.events.on("auto-dodge:ready", function()
@@ -910,6 +910,8 @@ starfish.events.on("world:respawn", function()
     newServer()
     location.known = false
     location.server = nil   -- (the next location is this new server's, not a move)
+    location.inGame = false
+    location.mode = nil
 end)
 starfish.events.on("session:join", function()
     newServer()
