@@ -3,7 +3,7 @@ plugin = {
     displayName = "Auto Dodge",
     command = "dodge",
     prefix = "§bAD",
-    version = "1.0.2",
+    version = "1.0.3",
     minStarfishVersion = "0.1.0-beta.16",
     description = "Dodges pregame lobbies when parties, open queues or nicks show up.",
     dependencies = {
@@ -51,6 +51,7 @@ local WITH_YOU_MS = 45          -- join lines this close to yours came in with y
 local NICK_BEFORE_MS = 600      -- a nick's tab entry lands this close to its join line
 local NICK_AFTER_MS = 300
 local NOTICE_DELAY_MS = 500     -- party chat goes after the dodge command
+local PC_SPACING_MS = 500       -- ...and at least this long after any command
 local ROW_RESET_MS = 15 * 60 * 1000
 local LOG_MAX = 20
 local QUIT_GAP_MS = 400        -- a party's quit lines are further apart than its joins
@@ -151,8 +152,8 @@ starfish.config.defaults({ customGap = 0 })
 
 -- State
 
-local location = { server = nil, mode = nil, inGame = false, known = false }
-local party = { known = false, stale = false, pending = false, askedAt = 0, inParty = false, size = 1, leader = true, uuids = {} }
+local location = { server = nil, mode = nil, inGame = false, known = false, changedAt = 0 }
+local party = { known = false, stale = false, pending = false, askedAt = 0, answeredAt = -1, failures = 0, inParty = false, size = 1, leader = true, uuids = {} }
 local row = { count = 0, firstAt = 0, lastAt = 0 }
 local send = { slowUntil = 0, lastCommandAt = -1e9, timer = nil, next = nil, tries = 0, slowTries = 0, note = nil }
 local history = {}
@@ -277,11 +278,15 @@ end
 -- Party chat, NOTICE_DELAY_MS after any dodge command and never during a slow down.
 local function partyChat(text, kind)
     if not cfg("partyChat.on") or not cfg("partyChat." .. kind) or not party.inParty or party.size < 2 then return end
-    starfish.timers.delay(NOTICE_DELAY_MS, function()
+    local function go()
         if now() < send.slowUntil then return end
+        -- Not too close to another command (the dodge itself goes first).
+        local wait = send.lastCommandAt + PC_SPACING_MS - now()
+        if wait > 0 then starfish.timers.delay(wait, go) return end
         send.lastCommandAt = now()
         starfish.chat.sendToServer("/pc " .. text)
-    end)
+    end
+    starfish.timers.delay(NOTICE_DELAY_MS, go)
 end
 
 local function logEntry(kind, what)
@@ -309,10 +314,12 @@ local function command()
 end
 
 local sendDodge
+local askParty
 
 local function failed(text)
     setResult("failed")
     lobby.result = nil
+    lobby.lateLeave = true   -- a command already sent may still move you
     say(text)
 end
 
@@ -360,7 +367,15 @@ end
 local function dodge(kind, what, note, noCount)
     if lobby.acted or lobby.started then return false end
     if not location.inGame or teamSize() < 2 then return false end   -- BedWars only; solos never dodge
-    if not party.known or (party.inParty and not party.leader) then return false end
+    if party.inParty and party.known and not party.leader then return false end
+    if not party.known then
+        if not lobby.toldUnknown then
+            lobby.toldUnknown = true
+            say(what .. " §8· §7party unknown, not dodging")
+            askParty()
+        end
+        return false
+    end
     lobby.acted = true
     local line = what .. (noCount and "" or countText())
     if timeLeft() < CUTOFF_MS then
@@ -669,7 +684,6 @@ end
 
 -- Chat
 
-local askParty
 
 local function onJoinLine(name, n, max)
     lobby.count = n
@@ -737,6 +751,7 @@ local function onGameStart()
     lobby.started = true
     if lobby.burstTimer then lobby.burstTimer:off(); lobby.burstTimer = nil end
     if lobby.result == "sent" then failed("§cDodge failed §8· §7game started") end
+    lobby.lateLeave = nil
     cancelSend()
     if lobby.partyWait and lobby.partyWait.timer then lobby.partyWait.timer:off() end
     lobby.partyWait = nil
@@ -810,6 +825,8 @@ end)
 
 askParty = function()
     if party.pending and now() - party.askedAt < READY_WAIT_MS then return end
+    -- Already answered on this server and nothing changed since.
+    if party.known and not party.stale and party.answeredAt >= math.max(location.changedAt, lobby.enteredAt) then return end
     party.askedAt = now()
     party.pending = true
     local ok = pcall(function() starfish.plugins.require("hypixel-mod-api").requestPartyInfo() end)
@@ -821,12 +838,15 @@ starfish.events.on("hypixel:party_info", function(result)
     if result and result.success then
         party.known = true
         party.stale = false
+        party.answeredAt = now()
+        party.failures = 0
         party.inParty = result.inParty == true
         party.uuids = {}
         party.size = 1
         party.leader = true
         if party.inParty then
             local myId = meInfo()
+            party.leader = false   -- until your own entry says LEADER
             party.size = #(result.members or {})
             for _, m in ipairs(result.members or {}) do
                 local id = normUuid(m.uuid)
@@ -840,6 +860,16 @@ starfish.events.on("hypixel:party_info", function(result)
         end
     else
         party.known = false
+        party.failures = party.failures + 1
+        if party.failures == 1 then
+            say("§7Party info unavailable" .. (result and result.errorMessage and (" §8(" .. tostring(result.errorMessage) .. ")") or "") .. " §8· §7retrying")
+        end
+        -- Try again a little later (a few times).
+        if party.failures <= 3 then
+            starfish.timers.delay(2000 * party.failures, function()
+                if not party.known and location.inGame then askParty() end
+            end)
+        end
     end
     starfish.events.emit("auto-dodge:ready", {})
 end)
@@ -874,6 +904,10 @@ starfish.events.on("player:positionUpdate", function(event)
 end)
 
 local function newServer()
+    if lobby.lateLeave and history[1] and history[1].result == "failed" then
+        history[1].result = "sent"
+        lobby.result = "sent"
+    end
     if lobby.result == "sent" then
         setResult("left")
         dodgeSound()
@@ -894,6 +928,7 @@ local function applyLocation(loc)
     if loc.serverName and location.server and loc.serverName ~= location.server and lobby.mySeen then
         newServer()
     end
+    if loc.serverName ~= location.server then location.changedAt = now() end
     location.server = loc.serverName
     location.mode = loc.mode
     location.inGame = loc.serverType == "BEDWARS" and loc.lobbyName == nil and loc.mode ~= nil
