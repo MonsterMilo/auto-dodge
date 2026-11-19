@@ -3,7 +3,7 @@ plugin = {
     displayName = "Auto Dodge",
     command = "dodge",
     prefix = "§bAD",
-    version = "1.0.3",
+    version = "1.0.4",
     minStarfishVersion = "0.1.0-beta.16",
     description = "Dodges pregame lobbies when parties, open queues or nicks show up.",
     dependencies = {
@@ -34,7 +34,7 @@ local RETRY_MS = 3000
 local PLAY_EXTRA_MS = 2000      -- /play takes longer to move you than /l
 local SENDING_WAIT_MS = 5000    -- "Sending you to ...": give it this long
 local TRIES = 3
--- Hypixel's command rate limit, from testing:
+-- Hypixel's command rate limit:
 -- "Woah there, slow down!" IS the /l cooldown. It came when a command went
 -- out 1.5-2s after the one before, and any command counts (/pc too). Every
 -- command sent while it's on starts it again, so nothing is sent until it's
@@ -683,7 +683,6 @@ local function openEarly()
 end
 
 -- Chat
-
 
 local function onJoinLine(name, n, max)
     lobby.count = n
