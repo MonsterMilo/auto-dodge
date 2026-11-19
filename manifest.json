@@ -1,7 +1,7 @@
 {
   "name": "auto-dodge",
   "display_name": "Auto Dodge",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Dodges pregame lobbies when parties, open queues or nicks show up.",
   "prefix": "§bAD",
   "homepage": null,
